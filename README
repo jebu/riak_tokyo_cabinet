@@ -1,0 +1,16 @@
+riak_tokyo_cabinet
+==================
+
+A Tokyo Cabinet for Riak based on Toke [http://www.lshift.net/blog/2009/12/21/merry-christmas-toke-tokyo-cabinet-driver-for-erlang]
+
+Instructions
+============
+
+./rebar get-deps
+mkdir -p deps/toke/ebin
+cp support_files/toke.app deps/toke/ebin
+./rebar compile
+./rebar eunit
+
+to deploy
+./rebar install target=$RIAK_INSTALL_LOCATION
