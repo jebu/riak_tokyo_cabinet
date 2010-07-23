@@ -44,6 +44,7 @@
 -define(MERGE_CHECK_INTERVAL, timer:minutes(3)).
 
 start(Partition, _Config) ->
+    application:load(riak_tokyo_cabinet),
     DataDir = get_env(riak_tokyo_cabinet, data_root, "data/tokyo_cabinet"),
 
     TokyoCabinetRoot = filename:join([DataDir,
