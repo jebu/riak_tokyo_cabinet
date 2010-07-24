@@ -61,10 +61,15 @@
 %%----------------------------------------------------------------------------
 init(_Config) ->
     erl_ddll:start(),
-    code:load_file(toke_drv),
-    {file, Path} = code:is_loaded(toke_drv),
+    {file, Path} = 
+			case code:is_loaded(toke_drv) of
+				false -> 
+					code:load_file(toke_drv),
+					code:is_loaded(toke_drv);
+				Path1 ->
+					Path1
+			end,
     Dir = filename:join(filename:dirname(Path), "../priv"),
-    io:format("~p ~n",[Dir]),
     ok = erl_ddll:load_driver(Dir, ?LIBNAME),
     Port = open_port({spawn_driver, ?LIBNAME}, [binary, stream]),
     {ok, Port}.
