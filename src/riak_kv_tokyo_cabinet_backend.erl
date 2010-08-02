@@ -40,46 +40,35 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
-
--define(MERGE_CHECK_INTERVAL, timer:minutes(3)).
+-record(state, {base_dir = undefined}).
 
 start(Partition, _Config) ->
     application:load(riak_tokyo_cabinet),
     DataDir = get_env(riak_tokyo_cabinet, data_root, "data/tokyo_cabinet"),
-
-    TokyoCabinetRoot = filename:join([DataDir,
-                                 integer_to_list(Partition)]),
-    case filelib:ensure_dir(TokyoCabinetRoot) of
+    TokyoCabinetBase = filename:join([DataDir, 
+                                      integer_to_list(Partition)]),
+    TokyoCabinetMarker = filename:join([TokyoCabinetBase,
+                                      "0"]),
+    case filelib:ensure_dir(TokyoCabinetMarker) of
         ok ->
             ok;
         {error, Reason} ->
             error_logger:error_msg("Failed to create tokyo cabinet dir ~s: ~p\n",
-                                   [TokyoCabinetRoot, Reason]),
+                                   [TokyoCabinetMarker, Reason]),
             riak:stop("riak_kv_tokyo_cabinet_backend failed to start.")
     end,
+    {ok, #state{base_dir = TokyoCabinetBase}}.
 
-    {ok, Toke} = toke:init(_Config),
-    toke:new(Toke),
-    toke:set_cache(Toke, get_env(riak_tokyo_cabinet, records_to_cache, 100000)),
-    toke:tune(Toke, get_env(riak_tokyo_cabinet, bucket_size, 50000), 
-                    get_env(riak_tokyo_cabinet, hdb_apow, 5), 
-                    get_env(riak_tokyo_cabinet, hdb_fpow, 15),
-                    get_env(riak_tokyo_cabinet, hdb_options, [large])),
-
-    case toke:open(Toke, TokyoCabinetRoot, get_env(riak_tokyo_cabinet, hdb_open_options, [read, write, create])) of
-        ok ->
-            {ok, Toke};
-        Error ->
-            {error, Error}
-    end.
+stop(State) ->
+    lists:map(fun({Bucket, Toke}) -> 
+        toke:close(Toke),
+        remove_toke_bucket(State, Bucket)
+    end, get_all_toke_bucket_list(State)),
+    ok.
 
 
-stop(Toke) ->
-    toke:close(Toke).
-
-
-get(Toke, BKey) ->
-    Key = term_to_binary(BKey),
+get(State, {Bucket, Key}) ->
+    Toke = get_toke_for_bucket(Bucket, State),
     case toke:get(Toke, Key) of
         not_found  ->
             {error, notfound};
@@ -87,62 +76,77 @@ get(Toke, BKey) ->
             {ok, Value}
     end.
 
-put(Toke, BKey, Val) ->
-    Key = term_to_binary(BKey),
+put(State, {Bucket, Key}, Val) ->
+    Toke = get_toke_for_bucket(Bucket, State),
     case toke:insert(Toke, Key, Val) of
         ok -> ok;
         Reason ->
             {error, Reason}
     end.
 
-delete(Toke, BKey) ->
-    case toke:delete(Toke, term_to_binary(BKey)) of
+delete(State, {Bucket, Key}) ->
+    Toke = get_toke_for_bucket(Bucket, State),
+    case toke:delete(Toke, Key) of
         ok -> ok;
         Reason ->
             {error, Reason}
     end.
 
-list(Toke) ->
-    KeysFun = fun(K,_,Acc) ->
-      [binary_to_term(K) | Acc]
+list(State) ->
+  % list all keys in all buckets
+    Fun = fun(K,_,Acc) ->
+      [K | Acc]
     end,
-    case toke:fold(Toke, KeysFun, []) of
+    case fold(State, Fun, []) of
         KeyList when is_list(KeyList) ->
             KeyList;
-        Other ->
-            Other
+        _ ->
+            []
     end.
 
 list_bucket(State, {filter, Bucket, Fun}) ->
-    [K || {B, K} <- ?MODULE:list(State),
-          B =:= Bucket,
-          Fun(K)];
-list_bucket(State, '_') ->
-    [B || {B, _K} <- ?MODULE:list(State)];
-list_bucket(State, Bucket) ->
-    [K || {B, K} <- ?MODULE:list(State), B =:= Bucket].
-
-
-fold(Toke, Fun0, Acc0) ->
+    Toke = get_toke_for_bucket(Bucket, State),
     toke:fold(Toke,
-                 fun(K, V, Acc) ->
-                         Fun0(binary_to_term(K), V, Acc)
-                 end,
-                 Acc0).
+                fun(K, _, Acc) ->
+                    case Fun(K) of
+                        true -> [K | Acc];
+                        false -> Acc
+                    end
+                end,
+             []); 
+list_bucket(State, '_') ->
+    lists:foldl(fun({Bucket, _}, Acc) ->
+      [Bucket | Acc]
+    end, [], get_all_toke_bucket_list(State));
+list_bucket(State, Bucket) ->
+    Toke = get_toke_for_bucket(Bucket, State),
+    toke:fold(Toke,
+                fun(K, _, Acc) ->
+                        [K | Acc]
+                end,
+             []). 
 
-drop(Toke) ->
-    toke:close(Toke),
-    toke:delete(Toke),
-    ok.
+fold(State, Fun0, Acc0) ->
+    lists:foldl(fun({Bucket, Toke}, Acc1) ->
+        toke:fold(Toke,
+                    fun(K, V, Acc2) ->
+                         Fun0({Bucket, K}, V, Acc2)
+                    end,
+                 Acc1) 
+     end, Acc0, get_all_toke_bucket_list(State)).
 
-is_empty(Toke) ->
-    %% Determining if a tokyo cabinet is empty requires us to find at least
-    %% one value that is NOT a tombstone. Accomplish this by doing a fold
-    %% that forcibly bails on the very first k/v encountered.
+drop(State) ->
+    lists:map(fun({Bucket, Toke}) -> 
+        toke:close(Toke),
+        toke:delete(Toke),
+        remove_toke_bucket(State, Bucket)
+    end, get_all_toke_bucket_list(State)).
+
+is_empty(State) ->
     F = fun(_K, _V, Acc) ->
           Acc + 1
         end,
-    case toke:fold(Toke, F, 0) of
+    case fold(State, F, 0) of
       0 -> true;
       _ -> false
     end.
@@ -157,6 +161,58 @@ get_env(App, ConfParam, Default) ->
   case application:get_env(App, ConfParam) of
     {ok, Val} -> Val;
     _ -> Default
+  end.
+%
+get_toke_for_bucket(Bucket, State) ->
+  case erlang:get(Bucket) of
+    undefined -> 
+      Toke = init_tokyo_cabinet_for_bucket(Bucket, State),
+      erlang:put(Bucket, Toke),
+      erlang:put({Bucket, Toke}, toke_ports),
+      Toke;
+    Toke ->
+      Toke
+  end.
+%
+get_all_toke_bucket_list(_State) ->
+  erlang:get_keys(toke_ports).
+%
+remove_toke_bucket(_State, Bucket) ->
+  case erlang:get(Bucket) of
+    undefined -> ok;
+    Toke ->
+      erlang:erase(Bucket),
+      erlang:erase({Bucket, Toke})
+  end.
+%
+init_tokyo_cabinet_for_bucket(Bucket, State) ->
+  BucketStr = unicode:characters_to_list(Bucket) ++ ".tch",
+  TokyoCabinetFile = filename:join([State#state.base_dir,
+                                    BucketStr]),
+  case filelib:ensure_dir(TokyoCabinetFile) of
+      ok ->
+          ok;
+      {error, Reason} ->
+          error_logger:error_msg("Failed to create tokyo cabinet dir ~s: ~p\n",
+                                 [TokyoCabinetFile, Reason]),
+          riak:stop("riak_kv_tokyo_cabinet_backend failed to create file.")
+  end,
+
+  {ok, Toke} = toke:init([]),
+  toke:new(Toke),
+  toke:set_cache(Toke, get_env(riak_tokyo_cabinet, records_to_cache, 100000)),
+  toke:tune(Toke, get_env(riak_tokyo_cabinet, bucket_size, 50000), 
+                  get_env(riak_tokyo_cabinet, hdb_apow, 5), 
+                  get_env(riak_tokyo_cabinet, hdb_fpow, 15),
+                  get_env(riak_tokyo_cabinet, hdb_options, [large])),
+
+  case toke:open(Toke, TokyoCabinetFile, get_env(riak_tokyo_cabinet, hdb_open_options, [read, write, create])) of
+      ok ->
+          Toke;
+      Error ->
+          error_logger:error_msg("Failed to create tokyo cabinet file ~s: ~p\n",
+                                 [TokyoCabinetFile, Error]),
+          riak:stop("riak_kv_tokyo_cabinet_backend failed to create file.")
   end.
 %% ===================================================================
 %% EUnit tests
