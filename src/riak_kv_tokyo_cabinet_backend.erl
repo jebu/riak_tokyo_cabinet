@@ -50,8 +50,8 @@ start(Partition, _Config) ->
     TokyoCabinetMarker = filename:join([TokyoCabinetBase,
                                       "0"]),
     case filelib:ensure_dir(TokyoCabinetMarker) of
-        ok ->
-            ok;
+        ok -> ok;
+        {error, eexist} -> ok;
         {error, Reason} ->
             error_logger:error_msg("Failed to create tokyo cabinet dir ~s: ~p\n",
                                    [TokyoCabinetMarker, Reason]),
@@ -190,8 +190,8 @@ init_tokyo_cabinet_for_bucket(Bucket, State) ->
   TokyoCabinetFile = filename:join([State#state.base_dir,
                                     BucketStr]),
   case filelib:ensure_dir(TokyoCabinetFile) of
-      ok ->
-          ok;
+      ok -> ok;
+      {error, eexist} -> ok;
       {error, Reason} ->
           error_logger:error_msg("Failed to create tokyo cabinet dir ~s: ~p\n",
                                  [TokyoCabinetFile, Reason]),
