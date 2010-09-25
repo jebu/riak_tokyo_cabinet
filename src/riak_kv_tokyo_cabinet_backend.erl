@@ -201,6 +201,8 @@ init_tokyo_cabinet_for_bucket(Bucket, State) ->
   {ok, Toke} = toke:init([]),
   toke:new(Toke),
   toke:set_cache(Toke, get_env(riak_tokyo_cabinet, records_to_cache, 100000)),
+  toke:set_xm_size(Toke, get_env(riak_tokyo_cabinet, hdb_xm_size, 67108864)),
+  toke:set_df_unit(Toke, get_env(riak_tokyo_cabinet, hdb_df_unit, 0)),
   toke:tune(Toke, get_env(riak_tokyo_cabinet, bucket_size, 50000), 
                   get_env(riak_tokyo_cabinet, hdb_apow, 5), 
                   get_env(riak_tokyo_cabinet, hdb_fpow, 15),

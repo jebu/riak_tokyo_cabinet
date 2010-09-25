@@ -21,6 +21,8 @@
       {hdb_apow, 5},
       {hdb_fpow, 15},
       {hdb_options, [large]},
-      {hdb_open_options, [read, write, create]}
+      {hdb_open_options, [read, write, create]},
+      {hdb_xm_size, 67108864},
+      {hdb_df_unit, 0}
   ]}
  ]}.
